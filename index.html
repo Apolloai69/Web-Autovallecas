@@ -605,7 +605,7 @@ footer a{color:var(--red-dk)}
    URL de la aplicación web de Apps Script (termina en /exec) que guarda
    los leads en la hoja "Autovallecas · Leads landing Meta Ads".
    Ver apps-script-leads.gs. Vacío = solo muestra la confirmación (modo prueba). */
-const FORM_ENDPOINT = "";
+const FORM_ENDPOINT = "https://script.google.com/macros/s/AKfycbzR9CFmpNGYgj8ruXFR_NCOfHJIKxuvNlijH-w-xj8mVTwQA4I_mqewomnyU_MkIqnhCw/exec";
 
 /* Web3Forms (el mismo servicio que la web de APOLO MK): cada lead llega por email.
    Cada Access Key envía al correo con el que se creó en https://web3forms.com (gratis).
@@ -1006,6 +1006,7 @@ form.addEventListener("submit", async e => {
   const v = state.vehicle, p = prefs(), tel = telClean();
   const data = {
     vehiculo: v ? `${v.marca} ${v.modelo} · ${v.matricula} · ${eur(v.precio)}${v.reservada ? " (reservada, busca similar)" : ""}` : "Ninguno en concreto",
+    furgo: v ? {marca:v.marca, modelo:v.modelo, version:v.version, tipo:v.tipo, km:v.km, precio:v.precio, etiqueta:v.etiqueta, matricula:v.matricula, reservada:!!v.reservada, foto: v.spin ? `img/${v.spin.dir}/ext-1.webp` : ""} : null,
     tipo: p.tipo, presupuesto: p.presupuesto, etiqueta: p.etiqueta,
     cuando: val("cuando"), pago: val("pago"), perfil: val("perfil"),
     nombre: form.nombre.value.trim(), telefono: "+34" + tel, email: form.email.value.trim(),
@@ -1016,7 +1017,8 @@ form.addEventListener("submit", async e => {
   const btn = $("#send"); btn.disabled = true; btn.querySelector("span").textContent = "Enviando…";
   if(form.botcheck && form.botcheck.checked) return; // bot: se descarta en silencio
   try{
-    // Email: Web3Forms (una copia por cada clave/correo). Google Sheets (FORM_ENDPOINT) guarda el lead como fila.
+    // 1) Apps Script (FORM_ENDPOINT): guarda el lead en Google Sheets y envía el email con diseño Autovallecas desde Gmail.
+    // 2) Web3Forms: solo de reserva, si Apps Script falla o no está configurado.
     const calidad = {caliente:"🔥 CALIENTE", templado:"🟠 TEMPLADO", frio:"🔵 FRÍO"}[data.calidad_lead] || data.calidad_lead;
     const consejo = {caliente:"Quiere comprar ya: llámale en menos de 5 minutos", templado:"Interés real: llámale hoy", frio:"Está mirando: llámale o escríbele por WhatsApp"}[data.calidad_lead] || "";
     const telBonito = tel.replace(/(\d{3})(\d{3})(\d{3})/, "$1 $2 $3");
@@ -1059,14 +1061,17 @@ form.addEventListener("submit", async e => {
     if(data.email) mail.replyto = data.email;
     const envia = key => fetch("https://api.web3forms.com/submit", {method:"POST", headers:{"Content-Type":"application/json", Accept:"application/json"}, body:JSON.stringify({access_key:key, ...mail})})
       .then(r => r.json().catch(() => ({})).then(j => { if(!r.ok || j.success === false) throw new Error(j.message || r.status); }));
-    const envios = WEB3FORMS_KEYS.filter(Boolean).map(envia);
-    if(FORM_ENDPOINT) envios.push(fetch(FORM_ENDPOINT,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(data),redirect:"follow"}) // text/plain evita el preflight CORS
-      .then(r => r.json().catch(() => ({ok:true})).then(j => { if(!r.ok || j.ok === false) throw new Error(j.error || r.status); })));
-    if(!envios.length) console.log("Lead (modo prueba, sin envío):", data);
-    else {
-      const rs = await Promise.allSettled(envios);
-      if(!rs.some(x => x.status === "fulfilled")) throw rs[0].reason; // basta con que llegue por una vía
-    }
+    const viaWeb3 = async () => {
+      const rs = await Promise.allSettled(WEB3FORMS_KEYS.filter(Boolean).map(envia));
+      if(!rs.some(x => x.status === "fulfilled")) throw (rs[0] && rs[0].reason) || new Error("sin claves Web3Forms");
+    };
+    const viaSheets = () => fetch(FORM_ENDPOINT, {method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"}, body:JSON.stringify(data), redirect:"follow"}) // text/plain evita el preflight CORS
+      .then(r => r.json().catch(() => ({ok:true})).then(j => { if(!r.ok || j.ok === false) throw new Error(j.error || r.status); }));
+    if(FORM_ENDPOINT){
+      try{ await viaSheets(); }
+      catch(err){ if(WEB3FORMS_KEYS.length) await viaWeb3(); else throw err; }
+    } else if(WEB3FORMS_KEYS.length) await viaWeb3();
+    else console.log("Lead (modo prueba, sin envío):", data);
     state.submitted = true;
     form.querySelectorAll(".step").forEach(s => s.classList.toggle("on", s.dataset.step === "done"));
     $("#nav2").style.display = "none";
